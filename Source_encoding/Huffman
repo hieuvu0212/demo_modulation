@@ -1,0 +1,96 @@
+import heapq
+from itertools import count
+
+# nhập chuỗi từ người dùng (có thể đổi thành input(...))
+input_string = input("Enter a string: ")
+
+# ----------------------------
+# ĐẾM TẦN SỐ XUẤT HIỆN KÝ TỰ
+# ----------------------------
+freq = {}
+for ch in input_string:
+    if ch in freq:
+        freq[ch] += 1   # nếu đã có trong dict thì tăng thêm 1
+    else:
+        freq[ch] = 1    # nếu chưa có thì khởi tạo bằng 1
+
+# ----------------------------
+# ĐỊNH NGHĨA NODE CỦA CÂY HUFFMAN
+# ----------------------------
+class Node:
+    def __init__(self, char, freq):
+        self.char = char     # ký tự
+        self.freq = freq     # tần số xuất hiện
+        self.left = None     # con trái
+        self.right = None    # con phải
+    def __repr__(self):
+        return f"Node({self.char!r},{self.freq})"
+
+# ----------------------------
+# HÀM XÂY CÂY HUFFMAN
+# ----------------------------
+def build_huffman_tree(frequency):
+    heap = []
+    unique = count()  # bộ đếm để tạo "tie-breaker" (nếu freq bằng nhau thì dùng số này so sánh)
+
+    # đưa từng ký tự vào heap: (freq, tie, node)
+    for ch, f in frequency.items():
+        heapq.heappush(heap, (f, next(unique), Node(ch, f)))
+
+    # lặp đến khi chỉ còn 1 node (root)
+    while len(heap) > 1:
+        # lấy 2 phần tử nhỏ nhất ra
+        f1, _, left = heapq.heappop(heap)   # (freq nhỏ nhất, bỏ tie, node trái)
+        f2, _, right = heapq.heappop(heap)  # (freq nhỏ thứ hai, bỏ tie, node phải)
+
+        # tạo node gộp
+        merged = Node(None, f1 + f2)
+        merged.left = left
+        merged.right = right
+
+        # đưa node gộp trở lại heap
+        heapq.heappush(heap, (merged.freq, next(unique), merged))
+
+    return heap[0][2]  # phần tử cuối cùng trong heap chính là root của cây Huffman
+
+# ----------------------------
+# DUYỆT CÂY DFS ĐỂ TẠO BẢNG MÃ
+# ----------------------------
+def build_codes(node, current_code = "", codes = None):
+    if codes is None:
+        codes = {}
+    if node is None:
+        return codes
+
+    # nếu là lá (có ký tự)
+    if node.char is not None:
+        # nếu cây chỉ có 1 ký tự, mặc định gán "0"
+        codes[node.char] = current_code or "0"
+        return codes
+
+    # duyệt nhánh trái gắn "0"
+    build_codes(node.left, current_code + "0", codes)
+    # duyệt nhánh phải gắn "1"
+    build_codes(node.right, current_code + "1", codes)
+
+    return codes
+
+# ----------------------------
+# THỰC HIỆN
+# ----------------------------
+root = build_huffman_tree(freq)     # xây cây Huffman
+codes = build_codes(root)           # sinh bảng mã
+
+# in bảng mã Huffman
+print("Bảng mã Huffman:")
+for ch in freq:   # duyệt theo thứ tự ký tự xuất hiện trong input
+    print(ch, ":", codes[ch])
+
+# ----------------------------
+# MÃ HÓA CHUỖI GỐC
+# ----------------------------
+# duyệt từng ký tự gốc -> lấy mã Huffman tương ứng -> ghép thành 1 chuỗi nhị phân
+encoded = "".join(codes[ch] for ch in input_string)
+
+print("\nChuỗi đã mã hóa (bitstring):")
+print(encoded)
