@@ -1,3 +1,4 @@
+#Chạy trên gg colab
 # #Trong huấn luyện mô hình học sâu (deep learning), ta thường có:
 # Dữ liệu huấn luyện → loader
 # Mô hình → model (ví dụ CNN, ResNet,…)
