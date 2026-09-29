@@ -1,252 +1,230 @@
-%% ================= Khởi tạo môi trường =================
-clear all; close all; clc;
+%% =====================================================================
+%  Mô phỏng kênh 3GPP TR 38.901 UMa NLOS bằng QuaDRiGa
+%  - 4 BS (UPA 4x4, λ/2), 50 UE (UPA 2x2, λ/2), fc = 3.5 GHz
+%  - Xuất: ma trận kênh H, PDP, LSP (path gain, RMS delay spread, K-factor),
+%          path gain vs khoảng cách (so với công thức 38.901), sơ đồ mạng
+% ======================================================================
 
-addpath(genpath('E:\QuaDRiGa-main'));  
-savepath;  % Lưu đường dẫn để MATLAB nhớ
+%% ================= Khởi tạo môi trường =================
+clear; close all; clc;
+
+quadriga_path = 'E:\QuaDRiGa-main\quadriga_src';
+if ~exist('qd_layout', 'class')
+    addpath(genpath(quadriga_path));
+end
+rng(1);                                   % cố định seed để tái lập kết quả
 
 %% ================= Tham số mô phỏng =================
-s = qd_simulation_parameters;      % Đối tượng tham số mô phỏng
-s.center_frequency = 3.5e9;        % Tần số trung tâm = 3.5 GHz (band C 5G)
+fc      = 3.5e9;                          % tần số trung tâm 3.5 GHz (band n78)
+lambda  = 299792458 / fc;                 % bước sóng [m]
+BW      = 20e6;                           % băng thông
+Nsc     = 672;                            % số subcarrier
+no_bs   = 4;                              % số BS
+no_ue   = 50;                             % số UE
+h_bs    = 25;                             % chiều cao BS [m]
+h_ue    = 1.5;                            % chiều cao UE [m]
+area    = 250;                            % UE rải trong [-area, area]^2
+d2d_min = 35;                             % khoảng cách 2D tối thiểu BS-UE (38.901 UMa)
+
+s = qd_simulation_parameters;
+s.center_frequency = fc;
+s.show_progress_bars = 1;
 
 %% ================= Tạo layout =================
-l = qd_layout(s);                          % Layout mô phỏng (BS + UE)
-l.set_scenario('3GPP_38.901_UMa_NLOS');    % Kịch bản kênh: Urban Macro NLOS
+l = qd_layout(s);
 
-%% ================= Antenna Array cho BS =================
-% Tạo ma trận toạ độ anten (4x4 = 16 phần tử)
-[x_bs, y_bs] = meshgrid(0:0.5:1.5, 0:0.5:1.5);  % spacing 0.5 λ
-z_bs = zeros(size(x_bs));                       % nằm trên mặt phẳng z=0
-pos_tx = [x_bs(:), y_bs(:), z_bs(:)]';          % [3 x 16]
+%% ================= Antenna Array cho BS: UPA 4x4 (mặt phẳng y-z) =================
+tx_ant = qd_arrayant('omni');
+tx_ant.element_position = upa_positions(4, 4, 0.5 * lambda);   % [3 x 16], đơn vị mét
+l.tx_array = tx_ant;
 
-% Khởi tạo anten BS
-tx_ant = qd_arrayant();               
-tx_ant.element_position = pos_tx;               % gán toạ độ phần tử
-tx_ant.no_elements = size(pos_tx,2);            % số phần tử = 16
-l.tx_array = tx_ant;                            % gán anten cho layout (BS)
-
-%% ================= Antenna Array cho UE =================
-% Tạo ma trận toạ độ anten (2x2 = 4 phần tử)
-[x_ue, y_ue] = meshgrid(0:0.5:0.5, 0:0.5:0.5);  
-z_ue = zeros(size(x_ue));                       
-pos_rx = [x_ue(:), y_ue(:), z_ue(:)]';          % [3 x 4]
-
-% Khởi tạo anten UE
-rx_ant = qd_arrayant();
-rx_ant.element_position = pos_rx;
-rx_ant.no_elements = size(pos_rx,2);            % số phần tử = 4
-l.rx_array = rx_ant;                            % gán anten cho layout (UE)
+%% ================= Antenna Array cho UE: UPA 2x2 =================
+rx_ant = qd_arrayant('omni');
+rx_ant.element_position = upa_positions(2, 2, 0.5 * lambda);   % [3 x 4]
+l.rx_array = rx_ant;
 
 %% ================= Cấu hình BS =================
-l.no_tx = 4;     % số BS = 4
-l.tx_position = [150  150 -150 -150;    % x
-                 150 -150  150 -150;    % y
-                 25   25   25   25];    % z (chiều cao BS = 25 m)
+l.no_tx = no_bs;
+l.tx_position = [150  150 -150 -150;      % x
+                 150 -150  150 -150;      % y
+                 h_bs h_bs h_bs h_bs];    % z
 
-%% ================= Cấu hình UE =================
-l.no_rx = 50;                                     % số UE = 50
-l.rx_position(1,:) = rand(1,l.no_rx)*500 - 250;   % x: phân bố ngẫu nhiên [-250,250]
-l.rx_position(2,:) = rand(1,l.no_rx)*500 - 250;   % y: tương tự
-l.rx_position(3,:) = 1.5;                         % z: cao 1.5 m (người dùng)
+%% ================= Cấu hình UE (đảm bảo d2D >= d2d_min tới mọi BS) =================
+ue_pos = zeros(3, no_ue);
+n = 0;
+while n < no_ue
+    p = (rand(2,1) * 2 - 1) * area;
+    if min(vecnorm(l.tx_position(1:2,:) - p, 2, 1)) >= d2d_min
+        n = n + 1;
+        ue_pos(:, n) = [p; h_ue];
+    end
+end
+l.no_rx = no_ue;
+l.rx_position = ue_pos;
 
-%% ================= Sinh kênh truyền =================
-l.set_pairing;         % Gán cặp BS–UE
-c = l.get_channels;    % Sinh kênh (output = mảng qd_channel)
-Nsc = 672;                % số subcarrier
-BW  = 20e6;               % băng thông
-for i = 1:length(c)
-    fprintf('Channel %d:\n', i);
-    H = c(i).fr(BW,Nsc);
-    disp(H(:,:,1));  % In ma trận H tại thời điểm đầu
+%% ================= Kịch bản & sinh kênh =================
+l.set_scenario('3GPP_38.901_UMa_NLOS');   % tất cả link là UMa NLOS
+l.set_pairing;                            % mọi cặp BS–UE
+c = l.get_channels;                       % mảng qd_channel [no_ue x no_bs]
+nLinks = numel(c);
+fprintf('\nĐã sinh %d kênh (%d UE x %d BS), mỗi kênh %d Rx x %d Tx anten.\n', ...
+    nLinks, no_ue, no_bs, c(1).no_rxant, c(1).no_txant);
+
+% In ma trận H (subcarrier đầu) cho vài kênh đầu tiên
+n_print = 2;
+for i = 1:min(n_print, nLinks)
+    H = c(i).fr(BW, Nsc);                 % [Nrx x Ntx x Nsc]
+    fprintf('\n%s: H(:,:,1) =\n', c(i).name);
+    disp(H(:,:,1));
 end
 
-%% ================= Vẽ PDP (Power Delay Profile) =================
-% Function: Sử dụng linear index (idx) thay vì (ue_id, bs_id)
-% Để lấy specific: idx = (bs_id-1)*l.no_rx + ue_id; e.g., UE1-BS1: idx=1
+%% ================= PDP =================
+% Linear index: idx = (bs_id-1)*no_ue + ue_id  (vd. UE1-BS1: idx = 1)
+plot_PDP(c, 1, Nsc, BW);
+% plot_PDP(c, no_ue + 1, Nsc, BW);        % UE1-BS2
+
+%% ================= Large-Scale Parameters (LSP) =================
+% Tính trực tiếp từ các path (coeff/delay) của QuaDRiGa -> chính xác, không
+% bị giới hạn độ phân giải 1/BW như khi IFFT từ đáp ứng tần số.
+PG_dB  = nan(no_ue, no_bs);               % path gain trung bình theo anten [dB]
+DS_ns  = nan(no_ue, no_bs);               % RMS delay spread [ns]
+K_dB   = nan(no_ue, no_bs);               % tỉ số công suất path mạnh nhất / còn lại [dB]
+d3D    = nan(no_ue, no_bs);               % khoảng cách 3D [m]
+
+for ue = 1:no_ue
+    for bs = 1:no_bs
+        [PG_dB(ue,bs), DS_ns(ue,bs), K_dB(ue,bs)] = link_lsp(c(ue,bs));
+        d3D(ue,bs) = norm(l.rx_position(:,ue) - l.tx_position(:,bs));
+    end
+end
+
+% BS phục vụ = BS có path gain lớn nhất
+[PG_serv_dB, serving_bs] = max(PG_dB, [], 2);
+
+% ---- Histogram LSP ----
+figure('Name', 'LSP Histograms', 'Position', [100 100 1200 400]);
+subplot(1,3,1); plot_hist(PG_dB(:), 'Path gain [dB]', 'Histogram path gain');
+subplot(1,3,2); plot_hist(DS_ns(:), 'RMS delay spread [ns]', 'Histogram RMS DS');
+subplot(1,3,3); plot_hist(K_dB(:),  'K-factor [dB]', 'Histogram K-factor');
+
+% ---- Path gain vs khoảng cách, so với 38.901 UMa NLOS ----
+d_ax  = logspace(log10(d2d_min), log10(max(d3D(:))), 100);
+PL_nl = pl_38901_uma_nlos(d_ax, fc, h_bs, h_ue);
+figure('Name', 'Path gain vs distance');
+semilogx(d3D(:), PG_dB(:), 'b.', 'MarkerSize', 10); hold on;
+semilogx(d_ax, -PL_nl, 'r-', 'LineWidth', 1.5);
+semilogx(d_ax, -PL_nl + 6, 'r--', d_ax, -PL_nl - 6, 'r--');   % ±σ_SF (6 dB)
+xlabel('Khoảng cách 3D [m]'); ylabel('Path gain [dB]');
+legend('QuaDRiGa', '38.901 UMa NLOS', '\pm\sigma_{SF}', 'Location', 'southwest');
+title('Path gain vs khoảng cách'); grid on;
+
+% ---- In thống kê ----
+fprintf('\n================ Thống kê LSP (%d links) ================\n', nLinks);
+fprintf('Path gain      : mean %.2f dB, range [%.2f, %.2f] dB\n', ...
+    mean(PG_dB(:),'omitnan'), min(PG_dB(:)), max(PG_dB(:)));
+fprintf('Serving PG     : mean %.2f dB\n', mean(PG_serv_dB,'omitnan'));
+fprintf('RMS delay      : mean %.2f ns, median %.2f ns\n', ...
+    mean(DS_ns(:),'omitnan'), median(DS_ns(:),'omitnan'));
+fprintf('  (38.901 UMa NLOS @%.1f GHz: median DS ≈ %.0f ns)\n', fc/1e9, ...
+    1e9 * 10^(-6.28 - 0.204*log10(fc/1e9)));
+fprintf('K-factor       : mean %.2f dB, range [%.2f, %.2f] dB\n', ...
+    mean(K_dB(:),'omitnan'), min(K_dB(:)), max(K_dB(:)));
+fprintf('Số UE mỗi BS phục vụ: %s\n', mat2str(histcounts(serving_bs, 0.5:1:no_bs+0.5)));
+
+%% ================= Vẽ sơ đồ mạng =================
+l.visualize([], [], 0);
+title('Layout UMa NLOS');
+
+%% =====================================================================
+%  Local functions (phải nằm cuối file script)
+% ======================================================================
+function pos = upa_positions(Nv, Nh, d)
+% Toạ độ phần tử UPA Nv x Nh trên mặt phẳng y-z, spacing d [m], tâm ở gốc.
+    [y, z] = meshgrid(((0:Nh-1) - (Nh-1)/2) * d, ((0:Nv-1) - (Nv-1)/2) * d);
+    pos = [zeros(1, Nv*Nh); y(:).'; z(:).'];
+end
+
+function [P, tau] = path_powers(ch)
+% Công suất (trung bình theo anten) và delay [s] của từng path, snapshot 1.
+    coeff = ch.coeff(:,:,:,1);                             % [Nrx x Ntx x L]
+    P = squeeze(mean(mean(abs(coeff).^2, 1), 2));          % [L x 1]
+    if ndims(ch.delay) >= 3                                 % delay riêng từng anten
+        tau = squeeze(mean(mean(ch.delay(:,:,:,1), 1), 2));
+    else
+        tau = ch.delay(:, 1);                               % [L x 1]
+    end
+    P = P(:); tau = tau(:);
+end
+
+function [PG_dB, DS_ns, K_dB] = link_lsp(ch)
+% LSP của một link từ các path, công suất lấy trung bình theo anten.
+    [P, tau] = path_powers(ch);
+    Ptot = sum(P);
+    if Ptot <= 0
+        PG_dB = NaN; DS_ns = NaN; K_dB = NaN; return;
+    end
+    PG_dB = 10*log10(Ptot);
+    tau_m = sum(P .* tau) / Ptot;
+    DS_ns = 1e9 * sqrt(sum(P .* (tau - tau_m).^2) / Ptot);
+    Pmax  = max(P);
+    K_dB  = 10*log10(Pmax / max(Ptot - Pmax, eps));
+end
+
+function PL = pl_38901_uma_nlos(d3D, fc, h_bs, h_ut)
+% Path loss 3GPP TR 38.901 Table 7.4.1-1, UMa NLOS (không kể shadow fading).
+    fc_GHz = fc / 1e9;
+    d2D  = sqrt(max(d3D.^2 - (h_bs - h_ut)^2, 1));
+    dBP  = 4 * (h_bs - 1) * (h_ut - 1) * fc / 299792458;   % h_E = 1 m
+    PL1  = 28 + 22*log10(d3D) + 20*log10(fc_GHz);
+    PL2  = 28 + 40*log10(d3D) + 20*log10(fc_GHz) ...
+           - 9*log10(dBP^2 + (h_bs - h_ut)^2);
+    PL_LOS = PL1 .* (d2D <= dBP) + PL2 .* (d2D > dBP);
+    PL_NL  = 13.54 + 39.08*log10(d3D) + 20*log10(fc_GHz) - 0.6*(h_ut - 1.5);
+    PL = max(PL_LOS, PL_NL);
+end
+
 function plot_PDP(c, idx, Nsc, BW)
-    % Lấy channel theo linear index
+% PDP (trung bình theo anten) từ đáp ứng tần số, idx là linear index của c.
     if idx > numel(c) || idx < 1
         error('Invalid channel index: %d (total %d channels)', idx, numel(c));
     end
-    h = c(idx);  
+    Ht    = c(idx).fr(BW, Nsc);                        % [Nrx x Ntx x Nsc]
+    h_imp = ifft(Ht, [], 3);                           % miền delay, bin = 1/BW
+    PDP   = squeeze(mean(mean(abs(h_imp).^2, 1), 2));  % [Nsc x 1]
+    if all(PDP == 0)
+        warning('PDP is zero for channel %d.', idx); return;
+    end
+    PDP_dB   = 10*log10(PDP / max(PDP) + eps);
+    delay_us = (0:Nsc-1).' / BW * 1e6;
 
-    % Lấy impulse response theo snapshot
-    Ht = h.fr(BW, Nsc);            % freq response (Nrx x Ntx x Nsc x Nsnap=1)
-    h_imp = ifft(Ht, [], 3);       % chuyển sang miền thời gian (delay domain: Nrx x Ntx x Ndelays x 1)
+    % Nửa sau trục delay là rò rỉ vòng của IFFT (delay "âm") -> bỏ qua.
+    % Chỉ vẽ vùng có năng lượng (> -30 dB), tối thiểu 2 µs.
+    half  = floor(Nsc/2);
+    last  = find(PDP_dB(1:half) > -30, 1, 'last');
+    nshow = min(half, max(last + 10, round(2e-6 * BW)));
 
-    % Tính PDP cho từng delay và snapshot (trung bình over rx/tx)
-    PDP = squeeze(mean(mean(abs(h_imp).^2, 1), 2));   % [Ndelays x Nsnap] (đúng thứ tự dim)
-    
-    % Handle empty/zero case
-    if isempty(PDP) || all(PDP(:) == 0)
-        warning('PDP is empty or zero; nothing to plot for channel %d.', idx);
+    % Các path thật (trung bình theo anten) để so sánh
+    [P, tau] = path_powers(c(idx));
+    P_dB = 10*log10(P / max(P));
+
+    figure('Name', sprintf('PDP %s', c(idx).name));
+    plot(delay_us(1:nshow), PDP_dB(1:nshow), 'b-', 'LineWidth', 1.2); hold on;
+    stem(tau*1e6, P_dB, 'r', 'filled', 'BaseValue', -40, 'MarkerSize', 4);
+    ylim([-40 1]); xlim([0 delay_us(nshow)]);
+    legend(sprintf('IFFT của H (%d SC, %.0f MHz)', Nsc, BW/1e6), 'Path (QuaDRiGa)');
+    xlabel('Delay [\mus]'); ylabel('Normalized power [dB]');
+    title(sprintf('PDP - %s', strrep(c(idx).name, '_', '\_')));
+    grid on;
+end
+
+function plot_hist(x, xlab, ttl)
+    x = x(isfinite(x));
+    if isempty(x)
+        axis off;
+        text(0.5, 0.5, 'No valid data', 'HorizontalAlignment', 'center', ...
+            'Units', 'normalized', 'FontSize', 12);
         return;
     end
-    
-    % Chuyển sang dB (normalized)
-    PDP_dB = 10 * log10(PDP ./ max(PDP(:) + eps));   % tránh log(0)
-    
-    % Get dimensions
-    [num_delays, Nsnap] = size(PDP_dB);  % num_delays ≈ Nsc (delay bins)
-    
-    % Tạo trục delay và snapshot
-    Ts = 1 / BW;                          
-    delay_us = (0 : num_delays - 1) * Ts * 1e6;  % µs (row vector)
-    time_axis = 1 : Nsnap;                   % snapshot index (row vector)
-    % Multiple delays, 1 snapshot: Plot power vs. delay (1D)
-    figure;
-    plot(delay_us, PDP_dB, 'r-o', 'LineWidth', 1.5);
-    xlabel('Delay [\mus]');
-    ylabel('Normalized Power [dB]');
-    title(sprintf('PDP vs. Delay (Channel %d, Single Snapshot)', idx));
-    grid on;
-    return;
+    histogram(x, 20);
+    xlabel(xlab); ylabel('Số links'); title(ttl); grid on;
 end
-
-% Lời gọi: PDP cho UE1-BS1 (idx=1)
-plot_PDP(c, 1, Nsc, BW);
-
-% Optional: PDP cho UE1-BS2 (idx=51)
-% plot_PDP(c, 51, Nsc, BW);
-
-%% ================= Large-Scale Parameters (LSP) =================
-% Sử dụng full PDP từ fr(BW, Nsc) để tránh mismatch coeff vs delay
-nLinks = numel(c);  % 200
-nProcess = nLinks;
-
-LSP_table = struct([]);
-u = 0;
-skipped_count = 0;
-
-for idx = 1:nProcess
-    ch = c(idx); 
-    
-    % Tính full PDP từ frequency response (robust, size luôn Nsc)
-    try
-        Ht = ch.fr(BW, Nsc);  % [Nrx x Ntx x Nsc x Nsnap=1]
-        h_imp = ifft(Ht, [], 3);  % [Nrx x Ntx x Nsc x 1] (delay domain)
-        
-        % PDP: Trung bình power per delay bin (over rx/tx)
-        PDP = squeeze(mean(mean(abs(h_imp).^2, 1), 2));  % [Nsc x 1] (column)
-        pwr_tap = PDP(:).';  % Row [1 x Nsc]
-        
-        % Delays tương ứng (full grid, seconds)
-        delays = (0 : Nsc - 1) / BW;  % [1 x Nsc], unit: s
-        
-        % Check size (luôn khớp!)
-        if length(pwr_tap) ~= length(delays)
-            error('Unexpected size mismatch in PDP (should not happen).');
-        end
-        
-    catch ME
-        % Nếu lỗi fr/ifft (hiếm), skip
-        warning('Channel %d: Error computing PDP (%s). Skipping.', idx, ME.message);
-        skipped_count = skipped_count + 1;
-        u = u + 1;
-        LSP_table(u).P_total_dB = NaN;
-        LSP_table(u).rms_delay_s = NaN;
-        LSP_table(u).Kfactor_dB = NaN;
-        LSP_table(u).channel_idx = idx;
-        continue;
-    end
-    
-    P_total = sum(pwr_tap);
-    
-    % Edge case: Kênh zero
-    if P_total <= 0
-        u = u + 1;
-        LSP_table(u).P_total_dB = NaN;
-        LSP_table(u).rms_delay_s = NaN;
-        LSP_table(u).Kfactor_dB = NaN;
-        LSP_table(u).channel_idx = idx;
-        skipped_count = skipped_count + 1;
-        continue;
-    end
-    
-    Nbins = length(pwr_tap);  % = Nsc=672
-    
-    % Mean và RMS delay (trên full PDP, unit: s)
-    if Nbins == 1
-        mean_delay = delays(1);
-        rms_delay = 0;
-    else
-        mean_delay = sum(pwr_tap .* delays) / P_total;
-        rms_delay  = sqrt( sum(pwr_tap .* (delays - mean_delay).^2) / P_total );
-    end
-
-    % K-factor trên PDP (power của bin mạnh nhất / power các bin khác)
-    [p_max, ~] = max(pwr_tap);
-    P_others = P_total - p_max;
-    if P_others <= 0 || Nbins == 1
-        Kfactor_dB = Inf;
-    else
-        Kfactor_dB = 10 * log10(p_max / P_others);
-    end
-
-    Pr_dB = 10 * log10(P_total + eps);
-
-    u = u + 1;
-    LSP_table(u).P_total_dB = Pr_dB;
-    LSP_table(u).rms_delay_s = rms_delay;
-    LSP_table(u).Kfactor_dB = Kfactor_dB;
-    LSP_table(u).channel_idx = idx;
-end
-
-% ---- Vẽ histogram (sử dụng bins=20 numeric, an toàn) ----
-figure('Name', 'LSP Histograms', 'Position', [100 100 1200 400]);
-data_power = [LSP_table.P_total_dB];
-data_rms = [LSP_table.rms_delay_s] * 1e9;  % Chuyển sang ns
-data_k = [LSP_table.Kfactor_dB];
-
-subplot(1,3,1);
-valid_power = data_power(isfinite(data_power));
-if ~isempty(valid_power)
-    histogram(valid_power, 20);  % 20 bins numeric
-    xlabel('Rx Power [dB]'); ylabel('Số links');
-    title('Histogram Rx Power');
-    grid on;
-    xlim([-120, -40]);
-else
-    axis off;
-    text(0.5, 0.5, 'No valid data', 'HorizontalAlignment', 'center', 'Units', 'normalized', 'FontSize', 12);
-end
-
-subplot(1,3,2);
-valid_rms = data_rms(isfinite(data_rms));
-if ~isempty(valid_rms)
-    histogram(valid_rms, 20);
-    xlabel('RMS Delay [ns]'); ylabel('Số links');
-    title('Histogram RMS Delay Spread');
-    grid on;
-    xlim([0, 2000]);
-else
-    axis off;
-    text(0.5, 0.5, 'No valid data', 'HorizontalAlignment', 'center', 'Units', 'normalized', 'FontSize', 12);
-end
-
-subplot(1,3,3);
-valid_k = data_k(isfinite(data_k));
-if ~isempty(valid_k)
-    histogram(valid_k, 20);
-    xlabel('K-factor [dB]'); ylabel('Số links');
-    title('Histogram K-factor');
-    grid on;
-    xlim([-10, 20]);
-else
-    axis off;
-    text(0.5, 0.5, 'No valid data', 'HorizontalAlignment', 'center', 'Units', 'normalized', 'FontSize', 12);
-end
-
-% In thống kê
-fprintf('Số links processed: %d (từ %d total)\n', u, nLinks);
-fprintf('Skipped %d channels (errors only).\n', skipped_count);
-fprintf('Mean Rx Power: %.2f dB\n', nanmean(data_power));
-fprintf('Mean RMS Delay: %.2f ns\n', nanmean(data_rms));
-if ~isempty(valid_k)
-    fprintf('Mean K-factor: %.2f dB (finite only)\n', nanmean(valid_k));
-    fprintf('K-factor range: [%.2f, %.2f] dB\n', min(valid_k), max(valid_k));
-else
-    fprintf('No finite K-factors.\n');
-end
-
-%% ================= Vẽ sơ đồ mạng =================
-l.visualize; 
